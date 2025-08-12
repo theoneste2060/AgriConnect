@@ -1,19 +1,21 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
-import { insertFarmerSchema, insertProductSchema, insertOrderSchema, insertReviewSchema } from "@shared/schema";
+import { getSession } from "./replitAuth";
+import { insertFarmerSchema, insertProductSchema, insertOrderSchema, insertReviewSchema, loginSchema, signupSchema } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcrypt";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth middleware
-  await setupAuth(app);
+  // Setup session middleware only
+  app.set("trust proxy", 1);
+  app.use(getSession());
 
   // Email/Password Authentication Routes
   app.post('/api/auth/signup', async (req, res) => {
     try {
-      const { firstName, lastName, email, password, userType } = req.body;
+      const validatedData = signupSchema.parse(req.body);
+      const { firstName, lastName, email, password, userType } = validatedData;
       
       // Check if user already exists
       const existingUsers = await storage.searchUsers({ email });
@@ -30,24 +32,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email,
         firstName,
         lastName,
-        userType: userType || 'customer',
+        userType,
         password: hashedPassword,
       });
 
-      res.json({ message: "User created successfully", userId: user.id });
+      // Create session
+      (req.session as any).user = {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        userType: user.userType,
+      };
+
+      res.json({ message: "User created successfully", user: { ...user, password: undefined } });
     } catch (error) {
       console.error("Signup error:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid input data", errors: error.errors });
+      }
       res.status(500).json({ message: "Failed to create user" });
     }
   });
 
   app.post('/api/auth/login', async (req, res) => {
     try {
-      const { email, password, userType } = req.body;
+      const validatedData = loginSchema.parse(req.body);
+      const { email, password, userType } = validatedData;
       
-      // Find user by email
-      const users = await storage.searchUsers({ email });
-      const user = users.find(u => u.userType === userType);
+      // Find user by email and userType
+      const users = await storage.searchUsers({ email, userType });
+      const user = users[0];
       
       if (!user || !user.password) {
         return res.status(401).json({ message: "Invalid credentials" });
@@ -71,6 +86,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ message: "Login successful", user: { ...user, password: undefined } });
     } catch (error) {
       console.error("Login error:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid input data", errors: error.errors });
+      }
       res.status(500).json({ message: "Failed to login" });
     }
   });
@@ -85,21 +103,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Check authentication middleware
-  const isEmailAuthenticated = (req: any, res: any, next: any) => {
-    if (req.user?.claims?.sub || req.session?.user) {
-      req.currentUser = req.user?.claims ? { 
-        id: req.user.claims.sub,
-        email: req.user.claims.email,
-        firstName: req.user.claims.first_name,
-        lastName: req.user.claims.last_name,
-      } : req.session.user;
+  const isAuthenticated = (req: any, res: any, next: any) => {
+    if (req.session?.user) {
+      req.currentUser = req.session.user;
       return next();
     }
     return res.status(401).json({ message: "Unauthorized" });
   };
 
   // Auth routes
-  app.get('/api/auth/user', isEmailAuthenticated, async (req: any, res) => {
+  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.currentUser.id;
       const user = await storage.getUser(userId);
@@ -145,7 +158,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Farmer routes
   app.post('/api/farmers', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.currentUser.id;
       const farmerData = insertFarmerSchema.parse({ ...req.body, userId });
       const farmer = await storage.createFarmer(farmerData);
       
@@ -161,7 +174,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/farmers/me', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.currentUser.id;
       const farmer = await storage.getFarmerByUserId(userId);
       if (!farmer) {
         return res.status(404).json({ message: "Farmer profile not found" });
@@ -194,7 +207,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Product routes
   app.post('/api/products', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.currentUser.id;
       const farmer = await storage.getFarmerByUserId(userId);
       if (!farmer) {
         return res.status(403).json({ message: "Only farmers can create products" });
@@ -292,7 +305,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Order routes
   app.post('/api/orders', isAuthenticated, async (req: any, res) => {
     try {
-      const customerId = req.user.claims.sub;
+      const customerId = req.currentUser.id;
       const { items, ...orderData } = req.body;
       
       const orderSchema = insertOrderSchema.extend({
@@ -314,7 +327,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/orders/customer', isAuthenticated, async (req: any, res) => {
     try {
-      const customerId = req.user.claims.sub;
+      const customerId = req.currentUser.id;
       const orders = await storage.getOrdersByCustomer(customerId);
       res.json(orders);
     } catch (error) {
@@ -324,7 +337,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/orders/farmer', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.currentUser.id;
       const farmer = await storage.getFarmerByUserId(userId);
       if (!farmer) {
         return res.status(403).json({ message: "Only farmers can view farmer orders" });
@@ -352,8 +365,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Review routes
   app.post('/api/reviews', isAuthenticated, async (req: any, res) => {
     try {
-      const customerId = req.user.claims.sub;
-      const reviewData = insertReviewSchema.parse({ ...req.body, customerId });
+      const customerId = req.currentUser.id;
+      const { rating, farmerId, orderId, comment } = req.body;
+      const reviewData = {
+        rating,
+        farmerId,
+        customerId,
+        orderId: orderId || null,
+        comment: comment || null,
+      };
       const review = await storage.createReview(reviewData);
       res.json(review);
     } catch (error) {
@@ -401,7 +421,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.get('/api/ml/recommendations', isAuthenticated, async (req: any, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const userId = req.currentUser.id;
       const recommendations = await storage.getRecommendationsForUser(userId);
       
       // Generate mock recommendations if none exist
@@ -432,7 +452,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Admin dashboard routes
   app.get('/api/admin/statistics', isAuthenticated, async (req: any, res) => {
     try {
-      const user = await storage.getUser(req.user.claims.sub);
+      const user = await storage.getUser(req.currentUser.id);
       if (user?.userType !== 'admin') {
         return res.status(403).json({ message: "Admin access required" });
       }
@@ -462,6 +482,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(stats);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch admin statistics" });
+    }
+  });
+
+  // Admin API endpoints  
+  app.get('/api/admin/users', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const user = await storage.getUser(userId);
+      
+      if (user?.userType !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const users = await storage.searchUsers({});
+      res.json(users.map(u => ({ ...u, password: undefined })));
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  app.get('/api/admin/farmers', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const user = await storage.getUser(userId);
+      
+      if (user?.userType !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const farmers = await storage.searchFarmers({});
+      res.json(farmers);
+    } catch (error) {
+      console.error("Error fetching farmers:", error);
+      res.status(500).json({ message: "Failed to fetch farmers" });
+    }
+  });
+
+  app.get('/api/admin/orders', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const user = await storage.getUser(userId);
+      
+      if (user?.userType !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const orders = await storage.getAllOrders();
+      res.json(orders);
+    } catch (error) {
+      console.error("Error fetching admin orders:", error);
+      res.status(500).json({ message: "Failed to fetch orders" });
+    }
+  });
+
+  app.get('/api/admin/products', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const user = await storage.getUser(userId);
+      
+      if (user?.userType !== 'admin') {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+
+      const products = await storage.getAllProducts();
+      res.json(products);
+    } catch (error) {
+      console.error("Error fetching admin products:", error);
+      res.status(500).json({ message: "Failed to fetch products" });
     }
   });
 

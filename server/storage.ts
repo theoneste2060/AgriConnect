@@ -34,6 +34,7 @@ export interface IStorage {
   // User operations - mandatory for Replit Auth
   getUser(id: string): Promise<User | undefined>;
   upsertUser(user: UpsertUser): Promise<User>;
+  searchUsers(filters: { email?: string; userType?: string }): Promise<User[]>;
   
   // Location operations
   getProvinces(): Promise<Province[]>;
@@ -89,6 +90,11 @@ export interface IStorage {
     farmer: Farmer & { user: User };
     distance?: number;
   }>>;
+
+  // Admin operations
+  searchUsers(filters: Record<string, any>): Promise<User[]>;
+  getAllOrders(): Promise<(Order & { customer: User; farmer: Farmer & { user: User } })[]>;
+  getAllProducts(): Promise<(Product & { farmer: Farmer & { user: User } })[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -134,25 +140,62 @@ export class MemStorage implements IStorage {
   }
 
   private initializeSampleData() {
-    // Sample users
+    // Sample users with hashed passwords (password is "password123" for all)
+    const hashedPassword = "$2b$10$rOzJqQcn9UVaZg5n8rF5NeqGfZGp2wLjzwKqLr1B8YNZBrFv.vLNW"; // bcrypt hash of "password123"
+    
     const sampleUsers = [
       {
         id: "farmer1",
-        email: "jean.baptiste@example.com",
+        email: "umuhinzi@example.com",
         firstName: "Jean",
         lastName: "Baptiste",
         userType: "farmer",
         profileImageUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150",
+        password: hashedPassword,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
       {
         id: "farmer2", 
-        email: "marie.claire@example.com",
+        email: "marie.umuhinzi@example.com",
         firstName: "Marie",
         lastName: "Claire",
         userType: "farmer",
         profileImageUrl: "https://images.unsplash.com/photo-1494790108755-2616b612b5bc?w=150",
+        password: hashedPassword,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "customer1",
+        email: "umukiriya@example.com",
+        firstName: "David",
+        lastName: "Nzeyimana",
+        userType: "customer",
+        profileImageUrl: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150",
+        password: hashedPassword,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "customer2",
+        email: "alice.umukiriya@example.com",
+        firstName: "Alice",
+        lastName: "Uwimana",
+        userType: "customer",
+        profileImageUrl: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150",
+        password: hashedPassword,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: "admin1",
+        email: "admin@agriconnect.rw",
+        firstName: "Peter",
+        lastName: "Karenzi",
+        userType: "admin",
+        profileImageUrl: "https://images.unsplash.com/photo-1560250097-0b93528c311a?w=150",
+        password: hashedPassword,
         createdAt: new Date(),
         updatedAt: new Date(),
       },
@@ -252,11 +295,25 @@ export class MemStorage implements IStorage {
       lastName: userData.lastName ?? existingUser?.lastName ?? null,
       profileImageUrl: userData.profileImageUrl ?? existingUser?.profileImageUrl ?? null,
       userType: userData.userType ?? existingUser?.userType ?? "customer",
+      password: userData.password ?? existingUser?.password ?? null,
       createdAt: existingUser?.createdAt ?? new Date(),
       updatedAt: new Date(),
     };
     this.users.set(user.id, user);
     return user;
+  }
+
+  async searchUsers(filters: { email?: string; userType?: string } | Record<string, any>): Promise<User[]> {
+    let filteredUsers = Array.from(this.users.values());
+    
+    if ('email' in filters && filters.email) {
+      filteredUsers = filteredUsers.filter(u => u.email === filters.email);
+    }
+    if ('userType' in filters && filters.userType) {
+      filteredUsers = filteredUsers.filter(u => u.userType === filters.userType);
+    }
+    
+    return filteredUsers;
   }
 
   async getProvinces(): Promise<Province[]> {
@@ -558,6 +615,44 @@ export class MemStorage implements IStorage {
       farmer: p.farmer,
       distance: Math.random() * 10, // Mock distance calculation
     })).sort((a, b) => parseFloat(a.product.pricePerUnit) - parseFloat(b.product.pricePerUnit));
+  }
+
+  // Admin operations (using existing searchUsers method above)
+
+  async getAllOrders() {
+    const results = [];
+    for (const order of Array.from(this.orders.values())) {
+      const customer = this.users.get(order.customerId);
+      const farmer = this.farmers.get(order.farmerId);
+      if (customer && farmer) {
+        const farmerUser = this.users.get(farmer.userId);
+        if (farmerUser) {
+          results.push({
+            ...order,
+            customer,
+            farmer: { ...farmer, user: farmerUser }
+          });
+        }
+      }
+    }
+    return results;
+  }
+
+  async getAllProducts() {
+    const results = [];
+    for (const product of Array.from(this.products.values())) {
+      const farmer = this.farmers.get(product.farmerId);
+      if (farmer) {
+        const user = this.users.get(farmer.userId);
+        if (user) {
+          results.push({
+            ...product,
+            farmer: { ...farmer, user }
+          });
+        }
+      }
+    }
+    return results;
   }
 }
 

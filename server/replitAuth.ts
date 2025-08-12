@@ -6,6 +6,7 @@ import session from "express-session";
 import type { Express, RequestHandler } from "express";
 import memoize from "memoizee";
 import connectPg from "connect-pg-simple";
+import MemoryStore from "memorystore";
 import { storage } from "./storage";
 
 if (!process.env.REPLIT_DOMAINS) {
@@ -26,8 +27,8 @@ export function getSession() {
   const sessionTtl = 7 * 24 * 60 * 60 * 1000; // 1 week
   
   // Use memory store for development
-  const MemoryStore = require('memorystore')(session);
-  const sessionStore = new MemoryStore({
+  const SessionMemoryStore = MemoryStore(session);
+  const sessionStore = new SessionMemoryStore({
     checkPeriod: 86400000 // prune expired entries every 24h
   });
 

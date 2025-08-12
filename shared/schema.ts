@@ -177,6 +177,12 @@ export type DemandPrediction = typeof demandPredictions.$inferSelect;
 export type Recommendation = typeof recommendations.$inferSelect;
 
 // Insert schemas
+export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const insertFarmerSchema = createInsertSchema(farmers).omit({
   id: true,
   createdAt: true,
@@ -199,3 +205,22 @@ export const insertReviewSchema = createInsertSchema(reviews).omit({
   id: true,
   createdAt: true,
 });
+
+// Authentication schemas
+export const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+  userType: z.enum(["farmer", "customer", "admin"]),
+});
+
+export const signupSchema = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  email: z.string().email(),
+  password: z.string().min(6),
+  userType: z.enum(["farmer", "customer", "admin"]),
+});
+
+// Type exports for authentication
+export type LoginData = z.infer<typeof loginSchema>;
+export type SignupData = z.infer<typeof signupSchema>;
